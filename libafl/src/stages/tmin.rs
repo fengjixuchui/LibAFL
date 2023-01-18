@@ -13,7 +13,7 @@ use ahash::AHasher;
 use crate::monitors::PerfFeature;
 use crate::{
     bolts::{tuples::Named, HasLen},
-    corpus::{Corpus, Testcase},
+    corpus::{Corpus, CorpusId, Testcase},
     events::EventFirer,
     executors::{Executor, ExitKind, HasObservers},
     feedbacks::{Feedback, FeedbackFactory, HasObserverName},
@@ -41,7 +41,7 @@ where
     EM: EventFirer<State = Self::State>,
     F1: Feedback<Self::State>,
     F2: Feedback<Self::State>,
-    M: Mutator<Self::State>,
+    M: Mutator<Self::Input, Self::State>,
     OT: ObserversTuple<CS::State>,
     Z: ExecutionProcessor<OT, State = Self::State>
         + ExecutesInput<E, EM>
@@ -55,7 +55,7 @@ where
     fn mutator_mut(&mut self) -> &mut M;
 
     /// Gets the number of iterations this mutator should run for.
-    fn iterations(&self, state: &mut CS::State, corpus_idx: usize) -> Result<usize, Error>;
+    fn iterations(&self, state: &mut CS::State, corpus_idx: CorpusId) -> Result<usize, Error>;
 
     /// Runs this (mutational) stage for new objectives
     #[allow(clippy::cast_possible_wrap)] // more than i32 stages on 32 bit system - highly unlikely...
@@ -65,7 +65,7 @@ where
         executor: &mut E,
         state: &mut CS::State,
         manager: &mut EM,
-        base_corpus_idx: usize,
+        base_corpus_idx: CorpusId,
     ) -> Result<(), Error> {
         let orig_max_size = state.max_size();
         // basically copy-pasted from mutational.rs
@@ -177,7 +177,7 @@ impl<CS, E, EM, F1, F2, FF, M, OT, Z> UsesState
     for StdTMinMutationalStage<CS, E, EM, F1, F2, FF, M, OT, Z>
 where
     CS: Scheduler,
-    M: Mutator<CS::State>,
+    M: Mutator<CS::Input, CS::State>,
     Z: ExecutionProcessor<OT, State = CS::State>,
 {
     type State = CS::State;
@@ -194,7 +194,7 @@ where
     F1: Feedback<CS::State>,
     F2: Feedback<CS::State>,
     FF: FeedbackFactory<F2, CS::State, OT>,
-    M: Mutator<CS::State>,
+    M: Mutator<CS::Input, CS::State>,
     OT: ObserversTuple<CS::State>,
     Z: ExecutionProcessor<OT, State = CS::State>
         + ExecutesInput<E, EM>
@@ -207,7 +207,7 @@ where
         executor: &mut E,
         state: &mut CS::State,
         manager: &mut EM,
-        corpus_idx: usize,
+        corpus_idx: CorpusId,
     ) -> Result<(), Error> {
         self.perform_minification(fuzzer, executor, state, manager, corpus_idx)?;
 
@@ -241,7 +241,7 @@ where
     F2: Feedback<CS::State>,
     FF: FeedbackFactory<F2, CS::State, OT>,
     <CS::State as UsesInput>::Input: HasLen + Hash,
-    M: Mutator<CS::State>,
+    M: Mutator<CS::Input, CS::State>,
     OT: ObserversTuple<CS::State>,
     CS::State: HasClientPerfMonitor + HasCorpus + HasExecutions + HasMaxSize,
     Z: ExecutionProcessor<OT, State = CS::State>
@@ -262,7 +262,7 @@ where
     }
 
     /// Gets the number of iterations from a fixed number of runs
-    fn iterations(&self, _state: &mut CS::State, _corpus_idx: usize) -> Result<usize, Error> {
+    fn iterations(&self, _state: &mut CS::State, _corpus_idx: CorpusId) -> Result<usize, Error> {
         Ok(self.runs)
     }
 }
@@ -270,7 +270,7 @@ where
 impl<CS, E, EM, F1, F2, FF, M, OT, Z> StdTMinMutationalStage<CS, E, EM, F1, F2, FF, M, OT, Z>
 where
     CS: Scheduler,
-    M: Mutator<CS::State>,
+    M: Mutator<CS::Input, CS::State>,
     Z: ExecutionProcessor<OT, State = CS::State>,
 {
     /// Creates a new minimising mutational stage that will minimize provided corpus entries
