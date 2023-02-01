@@ -26,7 +26,7 @@ use crate::{
 /// ([`Debug`] is currently used for dev purposes, symbols hash will be used eventually)
 #[must_use]
 pub fn collect_backtrace() -> u64 {
-    let b = Backtrace::new();
+    let b = Backtrace::new_unresolved();
     if b.frames().is_empty() {
         return 0;
     }
@@ -77,23 +77,23 @@ impl<'a> BacktraceObserver<'a> {
             harness_type,
         }
     }
-}
-
-impl<'a> ObserverWithHashField for BacktraceObserver<'a> {
-    /// Gets the hash value of this observer.
-    #[must_use]
-    fn hash(&self) -> &Option<u64> {
-        self.hash.as_ref()
-    }
 
     /// Updates the hash value of this observer.
     fn update_hash(&mut self, hash: u64) {
         *self.hash.as_mut() = Some(hash);
     }
 
-    /// Clears the current hash value
+    /// Clears the current hash value (sets it to `None`)
     fn clear_hash(&mut self) {
         *self.hash.as_mut() = None;
+    }
+}
+
+impl<'a> ObserverWithHashField for BacktraceObserver<'a> {
+    /// Gets the hash value of this observer.
+    #[must_use]
+    fn hash(&self) -> Option<u64> {
+        *self.hash.as_ref()
     }
 }
 
@@ -219,23 +219,18 @@ impl AsanBacktraceObserver {
         });
         self.update_hash(hash);
     }
-}
-
-impl ObserverWithHashField for AsanBacktraceObserver {
-    /// Gets the hash value of this observer.
-    #[must_use]
-    fn hash(&self) -> &Option<u64> {
-        &self.hash
-    }
 
     /// Updates the hash value of this observer.
     fn update_hash(&mut self, hash: u64) {
         self.hash = Some(hash);
     }
+}
 
-    /// Clears the current hash value
-    fn clear_hash(&mut self) {
-        self.hash = None;
+impl ObserverWithHashField for AsanBacktraceObserver {
+    /// Gets the hash value of this observer.
+    #[must_use]
+    fn hash(&self) -> Option<u64> {
+        self.hash
     }
 }
 
