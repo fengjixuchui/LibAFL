@@ -351,11 +351,11 @@ impl Allocator {
         //log::trace!("freeing address: {:?}", ptr);
         let Some(metadata) = self.allocations.get_mut(&(ptr as usize)) else {
             if !ptr.is_null() {
-                 AsanErrors::get_mut()
+                AsanErrors::get_mut()
                     .report_error(AsanError::UnallocatedFree((ptr as usize, Backtrace::new())));
-          }
-             return;
-       };
+            }
+            return;
+        };
 
         if metadata.freed {
             AsanErrors::get_mut().report_error(AsanError::DoubleFree((
@@ -385,14 +385,13 @@ impl Allocator {
         metadatas.sort_by(|a, b| a.address.cmp(&b.address));
         let mut offset_to_closest = i64::max_value();
         let mut closest = None;
+        let ptr: i64 = ptr.try_into().unwrap();
         for metadata in metadatas {
+            let address: i64 = metadata.address.try_into().unwrap();
             let new_offset = if hint_base == metadata.address {
-                (ptr as i64 - metadata.address as i64).abs()
+                (ptr - address).abs()
             } else {
-                std::cmp::min(
-                    offset_to_closest,
-                    (ptr as i64 - metadata.address as i64).abs(),
-                )
+                std::cmp::min(offset_to_closest, (ptr - address).abs())
             };
             if new_offset < offset_to_closest {
                 offset_to_closest = new_offset;

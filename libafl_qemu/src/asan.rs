@@ -16,7 +16,7 @@ use meminterval::{Interval, IntervalTree};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 use crate::{
-    emu::{Emulator, MemAccessInfo, SyscallHookResult},
+    emu::{EmuError, Emulator, MemAccessInfo, SyscallHookResult},
     helper::{QemuHelper, QemuHelperTuple, QemuInstrumentationFilter},
     hooks::QemuHooks,
     GuestAddr,
@@ -111,7 +111,7 @@ impl core::fmt::Debug for AsanGiovese {
         f.debug_struct("AsanGiovese")
             .field("alloc_tree", &self.alloc_tree)
             .field("dirty_shadow", &self.dirty_shadow)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -395,7 +395,7 @@ impl AsanGiovese {
         if self.snapshot_shadow {
             let set = self.dirty_shadow.lock().unwrap();
 
-            for &page in set.iter() {
+            for &page in &*set {
                 let data = Self::get_shadow_page(emu, page).to_vec();
                 self.saved_shadow.insert(page, data);
             }
@@ -425,7 +425,7 @@ impl AsanGiovese {
         if self.snapshot_shadow {
             let mut set = self.dirty_shadow.lock().unwrap();
 
-            for &page in set.iter() {
+            for &page in &*set {
                 let original = self.saved_shadow.get(&page);
                 if let Some(data) = original {
                     let cur = Self::get_shadow_page(emu, page);
@@ -454,8 +454,10 @@ impl AsanGiovese {
 
 static mut ASAN_INITED: bool = false;
 
-pub fn init_with_asan(args: &mut Vec<String>, env: &mut [(String, String)]) -> Emulator {
-    assert!(!args.is_empty());
+pub fn init_with_asan(
+    args: &mut Vec<String>,
+    env: &mut [(String, String)],
+) -> Result<Emulator, EmuError> {
     let current = env::current_exe().unwrap();
     let asan_lib = fs::canonicalize(current)
         .unwrap()
@@ -470,7 +472,7 @@ pub fn init_with_asan(args: &mut Vec<String>, env: &mut [(String, String)]) -> E
         |e: &str| "LD_PRELOAD=".to_string() + &asan_lib + " " + &e["LD_PRELOAD=".len()..];
 
     let mut added = false;
-    for (k, v) in env.iter_mut() {
+    for (k, v) in &mut *env {
         if k == "QEMU_SET_ENV" {
             let mut new_v = vec![];
             for e in v.split(',') {

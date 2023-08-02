@@ -11,6 +11,7 @@ Welcome to `LibAFL`
 // For `std::simd`
 #![cfg_attr(unstable_feature, feature(portable_simd))]
 #![warn(clippy::cargo)]
+#![allow(ambiguous_glob_reexports)]
 #![deny(clippy::cargo_common_metadata)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(clippy::all)]
@@ -24,7 +25,8 @@ Welcome to `LibAFL`
     clippy::ptr_as_ptr,
     clippy::missing_panics_doc,
     clippy::missing_docs_in_private_items,
-    clippy::module_name_repetitions
+    clippy::module_name_repetitions,
+    clippy::ptr_cast_constness
 )]
 #![cfg_attr(not(test), warn(
     missing_debug_implementations,
@@ -75,10 +77,10 @@ Welcome to `LibAFL`
 #[macro_use]
 extern crate std;
 #[macro_use]
+#[doc(hidden)]
 pub extern crate alloc;
-#[macro_use]
-extern crate static_assertions;
 #[cfg(feature = "ctor")]
+#[doc(hidden)]
 pub use ctor::ctor;
 
 // Re-export derive(SerdeAny)
@@ -149,7 +151,7 @@ pub enum Error {
     /// Serialization error
     Serialize(String, ErrorBacktrace),
     /// Compression error
-    #[cfg(feature = "llmp_compression")]
+    #[cfg(feature = "gzip")]
     Compression(ErrorBacktrace),
     /// File related error
     #[cfg(feature = "std")]
@@ -185,7 +187,7 @@ impl Error {
     {
         Error::Serialize(arg.into(), ErrorBacktrace::new())
     }
-    #[cfg(feature = "llmp_compression")]
+    #[cfg(feature = "gzip")]
     /// Compression error
     #[must_use]
     pub fn compression() -> Self {
@@ -283,7 +285,7 @@ impl fmt::Display for Error {
                 write!(f, "Error in Serialization: `{0}`", &s)?;
                 display_error_backtrace(f, b)
             }
-            #[cfg(feature = "llmp_compression")]
+            #[cfg(feature = "gzip")]
             Self::Compression(b) => {
                 write!(f, "Error in decompression")?;
                 display_error_backtrace(f, b)

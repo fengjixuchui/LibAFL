@@ -33,7 +33,7 @@ use crate::{
     },
     inputs::UsesInput,
     monitors::Monitor,
-    state::{HasClientPerfMonitor, HasExecutions, HasMetadata, UsesState},
+    state::{HasClientPerfMonitor, HasExecutions, HasLastReportTime, HasMetadata, UsesState},
     Error,
 };
 #[cfg(feature = "std")]
@@ -122,8 +122,7 @@ where
         _executor: &mut E,
     ) -> Result<usize, Error> {
         let count = self.events.len();
-        while !self.events.is_empty() {
-            let event = self.events.pop().unwrap();
+        while let Some(event) = self.events.pop() {
             self.handle_in_client(state, event)?;
         }
         Ok(count)
@@ -133,7 +132,7 @@ where
 impl<E, MT, S, Z> EventManager<E, Z> for SimpleEventManager<MT, S>
 where
     MT: Monitor,
-    S: UsesInput + HasClientPerfMonitor + HasExecutions + HasMetadata,
+    S: UsesInput + HasClientPerfMonitor + HasExecutions + HasLastReportTime + HasMetadata,
 {
 }
 
@@ -156,7 +155,7 @@ where
 impl<MT, S> ProgressReporter for SimpleEventManager<MT, S>
 where
     MT: Monitor,
-    S: UsesInput + HasExecutions + HasClientPerfMonitor + HasMetadata,
+    S: UsesInput + HasExecutions + HasClientPerfMonitor + HasMetadata + HasLastReportTime,
 {
 }
 
@@ -212,6 +211,7 @@ where
                 observers_buf: _,
                 time,
                 executions,
+                forward_id: _,
             } => {
                 monitor
                     .client_stats_mut_for(ClientId(0))
@@ -379,7 +379,12 @@ where
 impl<E, MT, S, SP, Z> EventManager<E, Z> for SimpleRestartingEventManager<MT, S, SP>
 where
     MT: Monitor,
-    S: UsesInput + HasExecutions + HasClientPerfMonitor + HasMetadata + Serialize,
+    S: UsesInput
+        + HasExecutions
+        + HasClientPerfMonitor
+        + HasMetadata
+        + HasLastReportTime
+        + Serialize,
     SP: ShMemProvider,
 {
 }
@@ -403,7 +408,7 @@ where
 impl<MT, S, SP> ProgressReporter for SimpleRestartingEventManager<MT, S, SP>
 where
     MT: Monitor,
-    S: UsesInput + HasExecutions + HasClientPerfMonitor + HasMetadata,
+    S: UsesInput + HasExecutions + HasClientPerfMonitor + HasMetadata + HasLastReportTime,
     SP: ShMemProvider,
 {
 }
@@ -505,6 +510,10 @@ where
                 let child_status = child_status.code().unwrap_or_default();
 
                 compiler_fence(Ordering::SeqCst);
+
+                if staterestorer.wants_to_exit() {
+                    return Err(Error::shutting_down());
+                }
 
                 #[allow(clippy::manual_assert)]
                 if !staterestorer.has_content() {

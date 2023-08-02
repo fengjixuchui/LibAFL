@@ -1690,13 +1690,17 @@ impl AsanRuntime {
             // on apple aarch64, WX pages can't be both writable and executable at the same time.
             // pthread_jit_write_protect_np flips them from executable (1) to writable (0)
             #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
-            libc::pthread_jit_write_protect_np(0);
+            {
+                libc::pthread_jit_write_protect_np(0);
+            }
 
             blob.as_ptr()
                 .copy_to_nonoverlapping(mapping as *mut u8, blob.len());
 
             #[cfg(all(target_vendor = "apple", target_arch = "aarch64"))]
-            libc::pthread_jit_write_protect_np(1);
+            {
+                libc::pthread_jit_write_protect_np(1);
+            }
             self.shadow_check_func = Some(std::mem::transmute(mapping as *mut u8));
         }
     }
@@ -2361,7 +2365,7 @@ impl AsanRuntime {
                                         | addr  | rip   |
                                         | Rcx   | Rax   |
                                         | Rsi   | Rdx   |
-            Old Rsp - (redsone_size) -> | flags | Rdi   |
+            Old Rsp - (redzone_size) -> | flags | Rdi   |
                                         |       |       |
             Old Rsp                  -> |       |       |
         */
@@ -2412,7 +2416,7 @@ impl AsanRuntime {
                 }
                 X86Register::Rdi => {
                     // In this case rdi is already clobbered, so we want it from the stack (we pushed rdi onto stack before!)
-                    writer.put_mov_reg_reg_offset_ptr(X86Register::Rsi, X86Register::Rsp, -0x28);
+                    writer.put_mov_reg_reg_offset_ptr(X86Register::Rsi, X86Register::Rsp, 0x20);
                 }
                 X86Register::Rsp => {
                     // In this case rsp is also clobbered

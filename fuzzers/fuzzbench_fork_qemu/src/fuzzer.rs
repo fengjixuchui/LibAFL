@@ -51,7 +51,7 @@ use libafl_qemu::{
     emu::Emulator,
     filter_qemu_args,
     hooks::QemuHooks,
-    MmapPerms, QemuForkExecutor, Regs,
+    GuestReg, MmapPerms, QemuForkExecutor, Regs,
 };
 #[cfg(unix)]
 use nix::{self, unistd::dup};
@@ -147,7 +147,7 @@ fn fuzz(
 
     let args: Vec<String> = env::args().collect();
     let env: Vec<(String, String)> = env::vars().collect();
-    let emu = Emulator::new(&args, &env);
+    let emu = Emulator::new(&args, &env)?;
 
     let mut elf_buffer = Vec::new();
     let elf = EasyElf::from_file(emu.binary_path(), &mut elf_buffer)?;
@@ -318,7 +318,7 @@ fn fuzz(
             emu.write_mem(input_addr, buf);
 
             emu.write_reg(Regs::Rdi, input_addr).unwrap();
-            emu.write_reg(Regs::Rsi, len).unwrap();
+            emu.write_reg(Regs::Rsi, len as GuestReg).unwrap();
             emu.write_reg(Regs::Rip, test_one_input_ptr).unwrap();
             emu.write_reg(Regs::Rsp, stack_ptr).unwrap();
 

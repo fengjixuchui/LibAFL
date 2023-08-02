@@ -353,9 +353,11 @@ impl Drop for ShMemServiceThread {
     fn drop(&mut self) {
         if self.join_handle.is_some() {
             log::info!("Stopping ShMemService");
-            let Ok(mut stream) = UnixStream::connect_to_unix_addr(
-                &UnixSocketAddr::new(UNIX_SERVER_NAME).unwrap(),
-            ) else { return };
+            let Ok(mut stream) =
+                UnixStream::connect_to_unix_addr(&UnixSocketAddr::new(UNIX_SERVER_NAME).unwrap())
+            else {
+                return;
+            };
 
             let body = postcard::to_allocvec(&ServedShMemRequest::Exit).unwrap();
 
@@ -605,8 +607,7 @@ where
         let mut size_bytes = [0_u8; 4];
         client.stream.read_exact(&mut size_bytes)?;
         let size = u32::from_be_bytes(size_bytes);
-        let mut bytes = vec![];
-        bytes.resize(size as usize, 0_u8);
+        let mut bytes = vec![0; size.try_into().unwrap()];
         client
             .stream
             .read_exact(&mut bytes)

@@ -499,8 +499,7 @@ fn recv_tcp_msg(stream: &mut TcpStream) -> Result<Vec<u8>, Error> {
     let mut size_bytes = [0_u8; 4];
     stream.read_exact(&mut size_bytes)?;
     let size = u32::from_be_bytes(size_bytes);
-    let mut bytes = vec![];
-    bytes.resize(size as usize, 0_u8);
+    let mut bytes = vec![0; size.try_into().unwrap()];
 
     #[cfg(feature = "llmp_debug")]
     log::trace!("LLMP TCP: Receiving payload of size {size}");
@@ -1053,7 +1052,7 @@ where
                 "PROGRAM ABORT : BUG: EOP does not fit in page! page {page:?}, size_current {:?}, size_total {:?}",
                 ptr::addr_of!((*page).size_used), ptr::addr_of!((*page).size_total));
 
-        let mut ret: *mut LlmpMsg = if last_msg.is_null() {
+        let ret: *mut LlmpMsg = if last_msg.is_null() {
             (*page).messages.as_mut_ptr()
         } else {
             llmp_next_msg_ptr_checked(map, last_msg, EOP_MSG_SIZE)?
@@ -1266,7 +1265,7 @@ where
         let mut new_map_shmem =
             self.new_or_unused_shmem((*old_map).sender_id, next_min_shmem_size)?;
 
-        let mut new_map = new_map_shmem.page_mut();
+        let new_map = new_map_shmem.page_mut();
 
         #[cfg(feature = "llmp_debug")]
         log::info!("got new map at: {new_map:?}");
@@ -1286,7 +1285,7 @@ where
         let out = self.alloc_eop()?;
 
         #[allow(clippy::cast_ptr_alignment)]
-        let mut end_of_page_msg = (*out).buf.as_mut_ptr() as *mut LlmpPayloadSharedMapInfo;
+        let end_of_page_msg = (*out).buf.as_mut_ptr() as *mut LlmpPayloadSharedMapInfo;
         (*end_of_page_msg).map_size = new_map_shmem.shmem.len();
         (*end_of_page_msg).shm_str = *new_map_shmem.shmem.id().as_array();
 
@@ -2091,7 +2090,7 @@ where
 
     /// For internal use: Forward the current message to the out map.
     unsafe fn forward_msg(&mut self, msg: *mut LlmpMsg) -> Result<(), Error> {
-        let mut out: *mut LlmpMsg = self.alloc_next((*msg).buf_len_padded as usize)?;
+        let out: *mut LlmpMsg = self.alloc_next((*msg).buf_len_padded as usize)?;
 
         /* Copy over the whole message.
         If we should need zero copy, we could instead post a link to the
@@ -3045,11 +3044,12 @@ where
         let TcpResponse::BrokerConnectHello {
             broker_shmem_description,
             hostname: _,
-        } = recv_tcp_msg(&mut stream)?.try_into()? else {
+        } = recv_tcp_msg(&mut stream)?.try_into()?
+        else {
             return Err(Error::illegal_state(
                 "Received unexpected Broker Hello".to_string(),
             ));
-         };
+        };
 
         let map = LlmpSharedMap::existing(
             shmem_provider.shmem_from_description(broker_shmem_description)?,
@@ -3064,11 +3064,13 @@ where
 
         send_tcp_msg(&mut stream, &client_hello_req)?;
 
-        let TcpResponse::LocalClientAccepted { client_id } = recv_tcp_msg(&mut stream)?.try_into()? else {
-             return Err(Error::illegal_state(
-                 "Unexpected Response from Broker".to_string(),
+        let TcpResponse::LocalClientAccepted { client_id } =
+            recv_tcp_msg(&mut stream)?.try_into()?
+        else {
+            return Err(Error::illegal_state(
+                "Unexpected Response from Broker".to_string(),
             ));
-       };
+        };
 
         // Set our ID to the one the broker sent us..
         // This is mainly so we can filter out our own msgs later.

@@ -27,7 +27,7 @@ struct Bigger(Range<usize>);
 
 impl PartialOrd for Bigger {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.0.len().partial_cmp(&other.0.len())
+        Some(self.cmp(other))
     }
 }
 
@@ -43,7 +43,7 @@ struct Earlier(Range<usize>);
 
 impl PartialOrd for Earlier {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        other.0.start.partial_cmp(&self.0.start)
+        Some(self.cmp(other))
     }
 }
 
@@ -155,13 +155,7 @@ where
         corpus_idx: CorpusId,
         name: &str,
     ) -> Result<E::Input, Error> {
-        let mut input = state
-            .corpus()
-            .get(corpus_idx)?
-            .borrow_mut()
-            .load_input()
-            .unwrap()
-            .clone();
+        let mut input = state.corpus().cloned_input_for_id(corpus_idx)?;
         // The backup of the input
         let backup = input.clone();
         // This is the buffer we'll randomly mutate during type_replace
@@ -202,13 +196,15 @@ where
                 let range_start = r.start;
                 let range_end = r.end;
                 let copy_len = r.len();
-                buffer_copy(
-                    input.bytes_mut(),
-                    changed.bytes(),
-                    range_start,
-                    range_start,
-                    copy_len,
-                );
+                unsafe {
+                    buffer_copy(
+                        input.bytes_mut(),
+                        changed.bytes(),
+                        range_start,
+                        range_start,
+                        copy_len,
+                    );
+                }
 
                 let consumed_input = input.clone();
                 let changed_hash = Self::get_raw_map_hash_run(
@@ -229,13 +225,15 @@ where
                     // Seems like this range is too big that we can't keep the original hash anymore
 
                     // Revert the changes
-                    buffer_copy(
-                        input.bytes_mut(),
-                        backup.bytes(),
-                        range_start,
-                        range_start,
-                        copy_len,
-                    );
+                    unsafe {
+                        buffer_copy(
+                            input.bytes_mut(),
+                            backup.bytes(),
+                            range_start,
+                            range_start,
+                            copy_len,
+                        );
+                    }
 
                     // Add smaller range
                     if copy_len > 1 {

@@ -10,7 +10,6 @@
 //! On `Unix` systems, the [`Launcher`] will use `fork` if the `fork` feature is used for `LibAFL`.
 //! Else, it will start subsequent nodes with the same commandline, and will set special `env` variables accordingly.
 
-#[cfg(all(feature = "std"))]
 use alloc::string::ToString;
 #[cfg(feature = "std")]
 use core::marker::PhantomData;
@@ -79,6 +78,10 @@ where
     /// A file name to write all client output to
     #[builder(default = None)]
     stdout_file: Option<&'a str>,
+    /// A file name to write all client stderr output to. If not specified, output is sent to
+    /// `stdout_file`.
+    #[builder(default = None)]
+    stderr_file: Option<&'a str>,
     /// The `ip:port` address of another broker to connect our new broker to for multi-machine
     /// clusters.
     #[builder(default = None)]
@@ -89,6 +92,9 @@ where
     /// Then, clients launched by this [`Launcher`] can connect to the original `broker`.
     #[builder(default = true)]
     spawn_broker: bool,
+    /// Tell the manager to serialize or not the state on restart
+    #[builder(default = true)]
+    serialize_state: bool,
     #[builder(setter(skip), default = PhantomData)]
     phantom_data: PhantomData<(&'a S, &'a SP)>,
 }
@@ -108,6 +114,7 @@ where
             .field("spawn_broker", &self.spawn_broker)
             .field("remote_broker_addr", &self.remote_broker_addr)
             .field("stdout_file", &self.stdout_file)
+            .field("stderr_file", &self.stderr_file)
             .finish_non_exhaustive()
     }
 }
@@ -146,6 +153,10 @@ where
         let stdout_file = self
             .stdout_file
             .map(|filename| File::create(filename).unwrap());
+        #[cfg(feature = "std")]
+        let stderr_file = self
+            .stderr_file
+            .map(|filename| File::create(filename).unwrap());
 
         #[cfg(feature = "std")]
         let debug_output = std::env::var("LIBAFL_DEBUG_OUTPUT").is_ok();
@@ -174,7 +185,11 @@ where
                         if !debug_output {
                             if let Some(file) = stdout_file {
                                 dup2(file.as_raw_fd(), libc::STDOUT_FILENO)?;
-                                dup2(file.as_raw_fd(), libc::STDERR_FILENO)?;
+                                if let Some(stderr) = stderr_file {
+                                    dup2(stderr.as_raw_fd(), libc::STDERR_FILENO)?;
+                                } else {
+                                    dup2(file.as_raw_fd(), libc::STDERR_FILENO)?;
+                                }
                             }
                         }
 
@@ -186,6 +201,7 @@ where
                                 cpu_core: Some(*bind_to),
                             })
                             .configuration(self.configuration)
+                            .serialize_state(self.serialize_state)
                             .build()
                             .launch()?;
 
@@ -208,6 +224,7 @@ where
                 .remote_broker_addr(self.remote_broker_addr)
                 .exit_cleanly_after(Some(NonZeroUsize::try_from(self.cores.ids.len()).unwrap()))
                 .configuration(self.configuration)
+                .serialize_state(self.serialize_state)
                 .build()
                 .launch()?;
 
@@ -255,6 +272,7 @@ where
                         cpu_core: Some(CoreId(core_id)),
                     })
                     .configuration(self.configuration)
+                    .serialize_state(self.serialize_state)
                     .build()
                     .launch()?;
 
@@ -315,6 +333,7 @@ where
                 .remote_broker_addr(self.remote_broker_addr)
                 .exit_cleanly_after(Some(NonZeroUsize::try_from(self.cores.ids.len()).unwrap()))
                 .configuration(self.configuration)
+                .serialize_state(self.serialize_state)
                 .build()
                 .launch()?;
 

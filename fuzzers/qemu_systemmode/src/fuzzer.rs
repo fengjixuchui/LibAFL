@@ -80,7 +80,7 @@ pub fn fuzz() {
         // Initialize QEMU
         let args: Vec<String> = env::args().collect();
         let env: Vec<(String, String)> = env::vars().collect();
-        let emu = Emulator::new(&args, &env);
+        let emu = Emulator::new(&args, &env).unwrap();
 
         emu.set_breakpoint(main_addr);
         unsafe {
@@ -89,6 +89,9 @@ pub fn fuzz() {
         emu.remove_breakpoint(main_addr);
 
         emu.set_breakpoint(breakpoint); // BREAKPOINT
+
+        let devices = emu.list_devices();
+        println!("Devices = {:?}", devices);
 
         // let saved_cpu_states: Vec<_> = (0..emu.num_cpus())
         //     .map(|i| emu.cpu_from_index(i).save_state())

@@ -14,7 +14,12 @@ use crate::SYS_fstatat64;
 use crate::SYS_mmap;
 #[cfg(any(cpu_target = "arm", cpu_target = "mips"))]
 use crate::SYS_mmap2;
-#[cfg(not(any(cpu_target = "arm", cpu_target = "mips", cpu_target = "i386")))]
+#[cfg(not(any(
+    cpu_target = "arm",
+    cpu_target = "mips",
+    cpu_target = "i386",
+    cpu_target = "ppc"
+)))]
 use crate::SYS_newfstatat;
 use crate::{
     emu::{Emulator, MmapPerms, SyscallHookResult},
@@ -88,7 +93,7 @@ impl core::fmt::Debug for QemuSnapshotHelper {
             .field("mmap_start", &self.mmap_start)
             .field("mmap_limit", &self.mmap_limit)
             .field("empty", &self.empty)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -206,7 +211,7 @@ impl QemuSnapshotHelper {
         {
             let new_maps = self.new_maps.get_mut().unwrap();
 
-            for acc in self.accesses.iter_mut() {
+            for acc in &mut self.accesses {
                 unsafe { &mut (*acc.get()) }.dirty.retain(|page| {
                     if let Some(info) = self.pages.get_mut(page) {
                         // TODO avoid duplicated memcpy
@@ -246,7 +251,7 @@ impl QemuSnapshotHelper {
         self.reset_maps(emulator);
 
         // This one is after that we remapped potential regions mapped at snapshot time but unmapped during execution
-        for acc in self.accesses.iter_mut() {
+        for acc in &mut self.accesses {
             for page in unsafe { &(*acc.get()).dirty } {
                 for entry in self
                     .maps
@@ -638,7 +643,12 @@ where
             let h = hooks.match_helper_mut::<QemuSnapshotHelper>().unwrap();
             h.access(a0 as GuestAddr, a3 as usize);
         }
-        #[cfg(not(any(cpu_target = "arm", cpu_target = "i386", cpu_target = "mips")))]
+        #[cfg(not(any(
+            cpu_target = "arm",
+            cpu_target = "i386",
+            cpu_target = "mips",
+            cpu_target = "ppc"
+        )))]
         SYS_newfstatat => {
             if a2 != 0 {
                 let h = hooks.match_helper_mut::<QemuSnapshotHelper>().unwrap();

@@ -13,7 +13,7 @@ use crate::monitors::PerfFeature;
 use crate::state::NopState;
 use crate::{
     bolts::current_time,
-    corpus::{Corpus, CorpusId, Testcase},
+    corpus::{Corpus, CorpusId, HasTestcase, Testcase},
     events::{Event, EventConfig, EventFirer, EventProcessor, ProgressReporter},
     executors::{Executor, ExitKind, HasObservers},
     feedbacks::Feedback,
@@ -23,7 +23,10 @@ use crate::{
     schedulers::Scheduler,
     stages::StagesTuple,
     start_timer,
-    state::{HasClientPerfMonitor, HasCorpus, HasExecutions, HasMetadata, HasSolutions, UsesState},
+    state::{
+        HasClientPerfMonitor, HasCorpus, HasExecutions, HasLastReportTime, HasMetadata,
+        HasSolutions, UsesState,
+    },
     Error,
 };
 
@@ -31,7 +34,10 @@ use crate::{
 const STATS_TIMEOUT_DEFAULT: Duration = Duration::from_secs(15);
 
 /// Holds a scheduler
-pub trait HasScheduler: UsesState {
+pub trait HasScheduler: UsesState
+where
+    Self::State: HasCorpus,
+{
     /// The [`Scheduler`] for this fuzzer
     type Scheduler: Scheduler<State = Self::State>;
 
@@ -152,7 +158,7 @@ where
 /// The main fuzzer trait.
 pub trait Fuzzer<E, EM, ST>: Sized + UsesState
 where
-    Self::State: HasClientPerfMonitor + HasMetadata + HasExecutions,
+    Self::State: HasClientPerfMonitor + HasMetadata + HasExecutions + HasLastReportTime,
     E: UsesState<State = Self::State>,
     EM: ProgressReporter<State = Self::State>,
     ST: StagesTuple<E, EM, Self::State, Self>,
@@ -182,11 +188,10 @@ where
         state: &mut EM::State,
         manager: &mut EM,
     ) -> Result<CorpusId, Error> {
-        let mut last = current_time();
         let monitor_timeout = STATS_TIMEOUT_DEFAULT;
         loop {
+            manager.maybe_report_progress(state, monitor_timeout)?;
             self.fuzz_one(stages, executor, state, manager)?;
-            last = manager.maybe_report_progress(state, last, monitor_timeout)?;
         }
     }
 
@@ -214,13 +219,14 @@ where
         }
 
         let mut ret = None;
-        let mut last = current_time();
         let monitor_timeout = STATS_TIMEOUT_DEFAULT;
 
         for _ in 0..iters {
+            manager.maybe_report_progress(state, monitor_timeout)?;
             ret = Some(self.fuzz_one(stages, executor, state, manager)?);
-            last = manager.maybe_report_progress(state, last, monitor_timeout)?;
         }
+
+        manager.report_progress(state)?;
 
         // If we would assume the fuzzer loop will always exit after this, we could do this here:
         // manager.on_restart(state)?;
@@ -249,7 +255,7 @@ where
     CS: Scheduler,
     F: Feedback<CS::State>,
     OF: Feedback<CS::State>,
-    CS::State: HasClientPerfMonitor,
+    CS::State: HasClientPerfMonitor + HasCorpus,
 {
     scheduler: CS,
     feedback: F,
@@ -262,7 +268,7 @@ where
     CS: Scheduler,
     F: Feedback<CS::State>,
     OF: Feedback<CS::State>,
-    CS::State: HasClientPerfMonitor,
+    CS::State: HasClientPerfMonitor + HasCorpus,
 {
     type State = CS::State;
 }
@@ -272,7 +278,7 @@ where
     CS: Scheduler,
     F: Feedback<CS::State>,
     OF: Feedback<CS::State>,
-    CS::State: HasClientPerfMonitor,
+    CS::State: HasClientPerfMonitor + HasCorpus,
 {
     type Scheduler = CS;
 
@@ -290,7 +296,7 @@ where
     CS: Scheduler,
     F: Feedback<CS::State>,
     OF: Feedback<CS::State>,
-    CS::State: HasClientPerfMonitor,
+    CS::State: HasClientPerfMonitor + HasCorpus,
 {
     type Feedback = F;
 
@@ -308,7 +314,7 @@ where
     CS: Scheduler,
     F: Feedback<CS::State>,
     OF: Feedback<CS::State>,
-    CS::State: HasClientPerfMonitor,
+    CS::State: HasClientPerfMonitor + HasCorpus,
 {
     type Objective = OF;
 
@@ -327,7 +333,7 @@ where
     F: Feedback<CS::State>,
     OF: Feedback<CS::State>,
     OT: ObserversTuple<CS::State> + Serialize + DeserializeOwned,
-    CS::State: HasCorpus + HasSolutions + HasClientPerfMonitor + HasExecutions,
+    CS::State: HasCorpus + HasSolutions + HasClientPerfMonitor + HasExecutions + HasCorpus,
 {
     /// Evaluate if a set of observation channels has an interesting state
     fn process_execution<EM>(
@@ -394,7 +400,7 @@ where
                     let observers_buf = if manager.configuration() == EventConfig::AlwaysUnique {
                         None
                     } else {
-                        Some(manager.serialize_observers::<OT>(observers)?)
+                        manager.serialize_observers::<OT>(observers)?
                     };
                     manager.fire(
                         state,
@@ -406,6 +412,7 @@ where
                             client_config: manager.configuration(),
                             time: current_time(),
                             executions: *state.executions(),
+                            forward_id: None,
                         },
                     )?;
                 }
@@ -503,6 +510,27 @@ where
         let observers = executor.observers();
         // Always consider this to be "interesting"
 
+        // However, we still want to trigger the side effects of objectives and feedbacks.
+        #[cfg(not(feature = "introspection"))]
+        let _is_solution = self
+            .objective_mut()
+            .is_interesting(state, manager, &input, observers, &exit_kind)?;
+
+        #[cfg(feature = "introspection")]
+        let _is_solution = self
+            .objective_mut()
+            .is_interesting_introspection(state, manager, &input, observers, &exit_kind)?;
+
+        #[cfg(not(feature = "introspection"))]
+        let _is_corpus = self
+            .feedback_mut()
+            .is_interesting(state, manager, &input, observers, &exit_kind)?;
+
+        #[cfg(feature = "introspection")]
+        let _is_corpus = self
+            .feedback_mut()
+            .is_interesting_introspection(state, manager, &input, observers, &exit_kind)?;
+
         // Not a solution
         self.objective_mut().discard_metadata(state, &input)?;
 
@@ -522,7 +550,7 @@ where
         let observers_buf = if manager.configuration() == EventConfig::AlwaysUnique {
             None
         } else {
-            Some(manager.serialize_observers::<OT>(observers)?)
+            manager.serialize_observers::<OT>(observers)?
         };
         manager.fire(
             state,
@@ -534,6 +562,7 @@ where
                 client_config: manager.configuration(),
                 time: current_time(),
                 executions: *state.executions(),
+                forward_id: None,
             },
         )?;
         Ok(idx)
@@ -547,7 +576,12 @@ where
     EM: ProgressReporter + EventProcessor<E, Self, State = CS::State>,
     F: Feedback<CS::State>,
     OF: Feedback<CS::State>,
-    CS::State: HasClientPerfMonitor + HasExecutions + HasMetadata,
+    CS::State: HasClientPerfMonitor
+        + HasExecutions
+        + HasMetadata
+        + HasCorpus
+        + HasTestcase
+        + HasLastReportTime,
     ST: StagesTuple<E, EM, CS::State, Self>,
 {
     fn fuzz_one(
@@ -586,6 +620,14 @@ where
         #[cfg(feature = "introspection")]
         state.introspection_monitor_mut().mark_manager_time();
 
+        {
+            let mut testcase = state.testcase_mut(idx)?;
+            let scheduled_count = testcase.scheduled_count();
+
+            // increase scheduled count, this was fuzz_level in afl
+            testcase.set_scheduled_count(scheduled_count + 1);
+        }
+
         Ok(idx)
     }
 }
@@ -595,7 +637,7 @@ where
     CS: Scheduler,
     F: Feedback<CS::State>,
     OF: Feedback<CS::State>,
-    CS::State: UsesInput + HasExecutions + HasClientPerfMonitor,
+    CS::State: UsesInput + HasExecutions + HasClientPerfMonitor + HasCorpus,
 {
     /// Create a new `StdFuzzer` with standard behavior.
     pub fn new(scheduler: CS, feedback: F, objective: OF) -> Self {
@@ -663,7 +705,7 @@ where
     OF: Feedback<CS::State>,
     E: Executor<EM, Self> + HasObservers<State = CS::State>,
     EM: UsesState<State = CS::State>,
-    CS::State: UsesInput + HasExecutions + HasClientPerfMonitor,
+    CS::State: UsesInput + HasExecutions + HasClientPerfMonitor + HasCorpus,
 {
     /// Runs the input and triggers observers and feedback
     fn execute_input(

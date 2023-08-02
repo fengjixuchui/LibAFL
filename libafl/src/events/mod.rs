@@ -1,8 +1,13 @@
-//! Eventmanager manages all events that go to other instances of the fuzzer.
+//! An [`EventManager`] manages all events that go to other instances of the fuzzer.
+//! The messages are commonly information about new Testcases as well as stats and other [`Event`]s.
 
 pub mod simple;
 pub use simple::*;
+pub mod centralized;
+pub use centralized::*;
 pub mod llmp;
+#[cfg(feature = "tcp_manager")]
+pub mod tcp;
 use alloc::{boxed::Box, string::String, vec::Vec};
 #[cfg(all(unix, feature = "std"))]
 use core::ffi::c_void;
@@ -24,12 +29,12 @@ use crate::bolts::os::unix_signals::{siginfo_t, ucontext_t, Handler, Signal};
 #[cfg(all(unix, feature = "std"))]
 use crate::bolts::{shmem::ShMemProvider, staterestore::StateRestorer};
 use crate::{
-    bolts::current_time,
+    bolts::{current_time, ClientId},
     executors::ExitKind,
     inputs::Input,
     monitors::UserStats,
     observers::ObserversTuple,
-    state::{HasClientPerfMonitor, HasExecutions, HasMetadata},
+    state::{HasClientPerfMonitor, HasExecutions, HasLastReportTime, HasMetadata},
     Error,
 };
 
@@ -67,7 +72,7 @@ pub unsafe fn shutdown_handler<SP>(
     signal: Signal,
     _info: siginfo_t,
     _context: &mut ucontext_t,
-    data: &mut ShutdownSignalData,
+    data: &ShutdownSignalData,
 ) where
     SP: ShMemProvider,
 {
@@ -108,7 +113,7 @@ impl Handler for ShutdownSignalData {
 }
 
 /// A per-fuzzer unique `ID`, usually starting with `0` and increasing
-/// by `1` in multiprocessed `EventManager`s, such as [`self::llmp::LlmpEventManager`].
+/// by `1` in multiprocessed [`EventManager`]s, such as [`self::llmp::LlmpEventManager`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct EventManagerId(
@@ -286,6 +291,8 @@ where
         time: Duration,
         /// The executions of this client
         executions: usize,
+        /// The original sender if, if forwarded
+        forward_id: Option<ClientId>,
     },
     /// New stats event to monitor.
     UpdateExecStats {
@@ -360,6 +367,7 @@ where
                 observers_buf: _,
                 time: _,
                 executions: _,
+                forward_id: _,
             } => "Testcase",
             Event::UpdateExecStats {
                 time: _,
@@ -427,11 +435,11 @@ pub trait EventFirer: UsesState {
     }
 
     /// Serialize all observers for this type and manager
-    fn serialize_observers<OT>(&mut self, observers: &OT) -> Result<Vec<u8>, Error>
+    fn serialize_observers<OT>(&mut self, observers: &OT) -> Result<Option<Vec<u8>>, Error>
     where
         OT: ObserversTuple<Self::State> + Serialize,
     {
-        Ok(postcard::to_allocvec(observers)?)
+        Ok(Some(postcard::to_allocvec(observers)?))
     }
 
     /// Get the configuration
@@ -443,7 +451,7 @@ pub trait EventFirer: UsesState {
 /// [`ProgressReporter`] report progress to the broker.
 pub trait ProgressReporter: EventFirer
 where
-    Self::State: HasClientPerfMonitor + HasMetadata + HasExecutions,
+    Self::State: HasClientPerfMonitor + HasMetadata + HasExecutions + HasLastReportTime,
 {
     /// Given the last time, if `monitor_timeout` seconds passed, send off an info/monitor/heartbeat message to the broker.
     /// Returns the new `last` time (so the old one, unless `monitor_timeout` time has passed and monitor have been sent)
@@ -451,49 +459,62 @@ where
     fn maybe_report_progress(
         &mut self,
         state: &mut Self::State,
-        last_report_time: Duration,
         monitor_timeout: Duration,
-    ) -> Result<Duration, Error> {
-        let executions = *state.executions();
+    ) -> Result<(), Error> {
+        let Some(last_report_time) = state.last_report_time() else {
+            // this is the first time we execute, no need to report progress just yet.
+            *state.last_report_time_mut() = Some(current_time());
+            return Ok(());
+        };
         let cur = current_time();
         // default to 0 here to avoid crashes on clock skew
-        if cur.checked_sub(last_report_time).unwrap_or_default() > monitor_timeout {
-            // Default no introspection implmentation
-            #[cfg(not(feature = "introspection"))]
+        if cur.checked_sub(*last_report_time).unwrap_or_default() > monitor_timeout {
+            // report_progress sets a new `last_report_time` internally.
+            self.report_progress(state)?;
+        }
+        Ok(())
+    }
+
+    /// Send off an info/monitor/heartbeat message to the broker.
+    /// Will return an [`crate::Error`], if the stats could not be sent.
+    fn report_progress(&mut self, state: &mut Self::State) -> Result<(), Error> {
+        let executions = *state.executions();
+        let cur = current_time();
+
+        // Default no introspection implmentation
+        #[cfg(not(feature = "introspection"))]
+        self.fire(
+            state,
+            Event::UpdateExecStats {
+                executions,
+                time: cur,
+                phantom: PhantomData,
+            },
+        )?;
+
+        // If performance monitor are requested, fire the `UpdatePerfMonitor` event
+        #[cfg(feature = "introspection")]
+        {
+            state
+                .introspection_monitor_mut()
+                .set_current_time(crate::bolts::cpu::read_time_counter());
+
+            // Send the current monitor over to the manager. This `.clone` shouldn't be
+            // costly as `ClientPerfMonitor` impls `Copy` since it only contains `u64`s
             self.fire(
                 state,
-                Event::UpdateExecStats {
+                Event::UpdatePerfMonitor {
                     executions,
                     time: cur,
+                    introspection_monitor: Box::new(state.introspection_monitor().clone()),
                     phantom: PhantomData,
                 },
             )?;
-
-            // If performance monitor are requested, fire the `UpdatePerfMonitor` event
-            #[cfg(feature = "introspection")]
-            {
-                state
-                    .introspection_monitor_mut()
-                    .set_current_time(crate::bolts::cpu::read_time_counter());
-
-                // Send the current monitor over to the manager. This `.clone` shouldn't be
-                // costly as `ClientPerfMonitor` impls `Copy` since it only contains `u64`s
-                self.fire(
-                    state,
-                    Event::UpdatePerfMonitor {
-                        executions,
-                        time: cur,
-                        introspection_monitor: Box::new(state.introspection_monitor().clone()),
-                        phantom: PhantomData,
-                    },
-                )?;
-            }
-
-            Ok(cur)
-        } else {
-            if cur.as_millis() % 1000 == 0 {}
-            Ok(last_report_time)
         }
+
+        *state.last_report_time_mut() = Some(cur);
+
+        Ok(())
     }
 }
 
@@ -541,7 +562,7 @@ pub trait HasEventManagerId {
 pub trait EventManager<E, Z>:
     EventFirer + EventProcessor<E, Z> + EventRestarter + HasEventManagerId + ProgressReporter
 where
-    Self::State: HasClientPerfMonitor + HasMetadata + HasExecutions,
+    Self::State: HasClientPerfMonitor + HasMetadata + HasExecutions + HasLastReportTime,
 {
 }
 
@@ -608,7 +629,7 @@ where
 }
 
 impl<E, S, Z> EventManager<E, Z> for NopEventManager<S> where
-    S: UsesInput + HasClientPerfMonitor + HasExecutions + HasMetadata
+    S: UsesInput + HasClientPerfMonitor + HasExecutions + HasLastReportTime + HasMetadata
 {
 }
 
@@ -626,7 +647,7 @@ where
 }
 
 impl<S> ProgressReporter for NopEventManager<S> where
-    S: UsesInput + HasClientPerfMonitor + HasExecutions + HasMetadata
+    S: UsesInput + HasClientPerfMonitor + HasExecutions + HasLastReportTime + HasMetadata
 {
 }
 
@@ -669,6 +690,7 @@ mod tests {
             client_config: EventConfig::AlwaysUnique,
             time: current_time(),
             executions: 0,
+            forward_id: None,
         };
 
         let serialized = postcard::to_allocvec(&e).unwrap();
@@ -683,6 +705,7 @@ mod tests {
                 client_config: _,
                 time: _,
                 executions: _,
+                forward_id: _,
             } => {
                 let o: tuple_list_type!(StdMapObserver::<u32, false>) =
                     postcard::from_bytes(observers_buf.as_ref().unwrap()).unwrap();

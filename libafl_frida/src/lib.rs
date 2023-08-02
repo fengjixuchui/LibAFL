@@ -18,7 +18,9 @@ Additional documentation is available in [the `LibAFL` book](https://aflplus.plu
     clippy::missing_panics_doc,
     clippy::missing_docs_in_private_items,
     clippy::module_name_repetitions,
-    clippy::unreadable_literal
+    clippy::unreadable_literal,
+    clippy::ptr_cast_constness,
+    clippy::must_use_candidate
 )]
 #![cfg_attr(not(test), warn(
     missing_debug_implementations,
@@ -77,7 +79,7 @@ pub mod windows_hooks;
 pub mod coverage_rt;
 
 /// Hooking thread lifecycle events. Seems like this is apple-only for now.
-#[cfg(any(target_vendor = "apple"))]
+#[cfg(target_vendor = "apple")]
 pub mod pthread_hook;
 
 #[cfg(feature = "cmplog")]
