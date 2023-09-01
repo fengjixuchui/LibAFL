@@ -9,13 +9,6 @@ use std::{
 
 use clap::{Arg, ArgAction, Command};
 use libafl::{
-    bolts::{
-        current_nanos, current_time,
-        rands::StdRand,
-        shmem::{ShMem, ShMemProvider, UnixShMemProvider},
-        tuples::{tuple_list, Merge},
-        AsMutSlice,
-    },
     corpus::{Corpus, InMemoryOnDiskCorpus, OnDiskCorpus},
     events::SimpleEventManager,
     executors::forkserver::{ForkserverExecutor, TimeoutForkserverExecutor},
@@ -29,7 +22,7 @@ use libafl::{
         StdMOptMutator, StdScheduledMutator, Tokens,
     },
     observers::{
-        AFLppCmpMap, ForkserverCmpObserver, HitcountsMapObserver, StdMapObserver, TimeObserver,
+        AFLppCmpMap, HitcountsMapObserver, StdCmpValuesObserver, StdMapObserver, TimeObserver,
     },
     schedulers::{
         powersched::PowerSchedule, IndexesLenTimeMinimizerScheduler, StdWeightedScheduler,
@@ -40,6 +33,13 @@ use libafl::{
     },
     state::{HasCorpus, HasMetadata, StdState},
     Error,
+};
+use libafl_bolts::{
+    current_nanos, current_time,
+    rands::StdRand,
+    shmem::{ShMem, ShMemProvider, UnixShMemProvider},
+    tuples::{tuple_list, Merge},
+    AsMutSlice,
 };
 use nix::sys::signal::Signal;
 
@@ -348,7 +348,7 @@ fn fuzz(
         cmplog_shmem.write_to_env("__AFL_CMPLOG_SHM_ID").unwrap();
         let cmpmap = unsafe { cmplog_shmem.as_object_mut::<AFLppCmpMap>() };
 
-        let cmplog_observer = ForkserverCmpObserver::new("cmplog", cmpmap, true);
+        let cmplog_observer = StdCmpValuesObserver::new("cmplog", cmpmap, true);
 
         let cmplog_forkserver = ForkserverExecutor::builder()
             .program(exec)

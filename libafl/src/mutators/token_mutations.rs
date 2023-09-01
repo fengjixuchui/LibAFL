@@ -17,12 +17,12 @@ use std::{
 };
 
 use hashbrown::HashSet;
+use libafl_bolts::{rands::Rand, AsSlice};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "std")]
 use crate::mutators::str_decode;
 use crate::{
-    bolts::{rands::Rand, AsSlice},
     inputs::{HasBytesVec, UsesInput},
     mutators::{
         buffer_self_copy, mutations::buffer_copy, MultiMutator, MutationResult, Mutator, Named,
@@ -34,15 +34,15 @@ use crate::{
 };
 
 /// A state metadata holding a list of tokens
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[allow(clippy::unsafe_derive_deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Tokens {
     // We keep a vec and a set, set for faster deduplication, vec for access
     tokens_vec: Vec<Vec<u8>>,
     tokens_set: HashSet<Vec<u8>>,
 }
 
-crate::impl_serdeany!(Tokens);
+libafl_bolts::impl_serdeany!(Tokens);
 
 /// The metadata used for token mutators
 impl Tokens {
@@ -1759,18 +1759,22 @@ impl TextType {
     }
 }
 
+/// Returns `true` if the given `u8` char is
+/// in the valid ascii range (`<= 0x7F`)
 #[inline]
-fn isascii(c: u8) -> bool {
+const fn isascii(c: u8) -> bool {
     c <= 0x7F
 }
 
+/// Returns `true` if the given `u8` char is
+/// a valid printable character (between `0x20` and `0x7E`)
 #[inline]
-fn isprint(c: u8) -> bool {
-    (0x20..=0x7e).contains(&c)
+const fn isprint(c: u8) -> bool {
+    c >= 0x20 && c <= 0x7E
 }
 
 #[inline]
-fn strlen(buf: &[u8]) -> usize {
+const fn strlen(buf: &[u8]) -> usize {
     let mut count = 0;
     while count < buf.len() {
         if buf[count] == 0x0 {

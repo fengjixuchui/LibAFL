@@ -1,6 +1,6 @@
 [package]
 name = "libafl_qemu_build"
-version = "0.10.1"
+version = "0.11.1"
 authors = ["Andrea Fioraldi <andreafioraldi@gmail.com>"]
 description = "Builder for LibAFL QEMU"
 documentation = "https://docs.rs/libafl_qemu_build"
@@ -17,6 +17,9 @@ categories = [
     "no-std",
 ]
 
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
 slirp = [] # build qemu with host libslirp (for user networking)
 
@@ -24,7 +27,7 @@ clippy = [] # special feature for clippy, don't use in normal projects§
 
 [dependencies]
 bindgen = "0.66"
-which = "4.2"
+which = "4.4"
 json = "0.12"
 shell-words = "1.1"
 pkg-config = "0.3.26"

@@ -3,10 +3,17 @@
 
 pub mod simple;
 pub use simple::*;
+#[cfg(all(unix, feature = "std"))]
 pub mod centralized;
+#[cfg(all(unix, feature = "std"))]
 pub use centralized::*;
+#[cfg(feature = "std")]
+#[allow(clippy::ignored_unit_patterns)]
+pub mod launcher;
+#[allow(clippy::ignored_unit_patterns)]
 pub mod llmp;
 #[cfg(feature = "tcp_manager")]
+#[allow(clippy::ignored_unit_patterns)]
 pub mod tcp;
 use alloc::{boxed::Box, string::String, vec::Vec};
 #[cfg(all(unix, feature = "std"))]
@@ -19,17 +26,19 @@ use core::{
 };
 
 use ahash::RandomState;
+#[cfg(feature = "std")]
+pub use launcher::*;
+#[cfg(all(unix, feature = "std"))]
+use libafl_bolts::os::unix_signals::{siginfo_t, ucontext_t, Handler, Signal};
+use libafl_bolts::{current_time, ClientId};
+#[cfg(all(unix, feature = "std"))]
+use libafl_bolts::{shmem::ShMemProvider, staterestore::StateRestorer};
 pub use llmp::*;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "std")]
 use uuid::Uuid;
 
-#[cfg(all(unix, feature = "std"))]
-use crate::bolts::os::unix_signals::{siginfo_t, ucontext_t, Handler, Signal};
-#[cfg(all(unix, feature = "std"))]
-use crate::bolts::{shmem::ShMemProvider, staterestore::StateRestorer};
 use crate::{
-    bolts::{current_time, ClientId},
     executors::ExitKind,
     inputs::Input,
     monitors::UserStats,
@@ -212,7 +221,7 @@ impl EventConfig {
     #[must_use]
     pub fn from_build_id() -> Self {
         EventConfig::BuildID {
-            id: crate::bolts::build_id::get(),
+            id: libafl_bolts::build_id::get(),
         }
     }
 
@@ -266,6 +275,7 @@ where
 }
 */
 
+// TODO remove forward_id as not anymore needed for centralized
 /// Events sent around in the library
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(bound = "I: serde::de::DeserializeOwned")]
@@ -497,7 +507,7 @@ where
         {
             state
                 .introspection_monitor_mut()
-                .set_current_time(crate::bolts::cpu::read_time_counter());
+                .set_current_time(libafl_bolts::cpu::read_time_counter());
 
             // Send the current monitor over to the manager. This `.clone` shouldn't be
             // costly as `ClientPerfMonitor` impls `Copy` since it only contains `u64`s
@@ -523,6 +533,7 @@ pub trait EventRestarter: UsesState {
     /// For restarting event managers, implement a way to forward state to their next peers.
     #[inline]
     fn on_restart(&mut self, _state: &mut Self::State) -> Result<(), Error> {
+        self.await_restart_safe();
         Ok(())
     }
 
@@ -532,7 +543,7 @@ pub trait EventRestarter: UsesState {
         Ok(())
     }
 
-    /// Block until we are safe to exit.
+    /// Block until we are safe to exit, usually called inside `on_restart`.
     #[inline]
     fn await_restart_safe(&mut self) {}
 }
@@ -660,13 +671,10 @@ impl<S> HasEventManagerId for NopEventManager<S> {
 #[cfg(test)]
 mod tests {
 
+    use libafl_bolts::{current_time, tuples::tuple_list, Named};
     use tuple_list::tuple_list_type;
 
     use crate::{
-        bolts::{
-            current_time,
-            tuples::{tuple_list, Named},
-        },
         events::{Event, EventConfig},
         executors::ExitKind,
         inputs::bytes::BytesInput,
@@ -748,7 +756,7 @@ pub mod pybind {
 
     macro_rules! unwrap_me {
         ($wrapper:expr, $name:ident, $body:block) => {
-            crate::unwrap_me_body!($wrapper, $name, $body, PythonEventManagerWrapper, {
+            libafl_bolts::unwrap_me_body!($wrapper, $name, $body, PythonEventManagerWrapper, {
                 Simple
             })
         };
@@ -756,7 +764,7 @@ pub mod pybind {
 
     macro_rules! unwrap_me_mut {
         ($wrapper:expr, $name:ident, $body:block) => {
-            crate::unwrap_me_mut_body!($wrapper, $name, $body, PythonEventManagerWrapper, {
+            libafl_bolts::unwrap_me_mut_body!($wrapper, $name, $body, PythonEventManagerWrapper, {
                 Simple
             })
         };

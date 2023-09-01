@@ -8,16 +8,8 @@ use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
 
 use clap::{self, Parser};
 use libafl::{
-    bolts::{
-        core_affinity::Cores,
-        current_nanos,
-        launcher::Launcher,
-        rands::StdRand,
-        shmem::{ShMemProvider, StdShMemProvider},
-        tuples::tuple_list,
-    },
     corpus::{InMemoryCorpus, OnDiskCorpus},
-    events::{llmp::LlmpEventConverter, EventConfig},
+    events::{launcher::Launcher, llmp::LlmpEventConverter, EventConfig},
     executors::{inprocess::InProcessExecutor, ExitKind},
     feedback_or,
     feedbacks::{CrashFeedback, MaxMapFeedback, NautilusChunksMetadata, NautilusFeedback},
@@ -33,6 +25,13 @@ use libafl::{
     stages::{mutational::StdMutationalStage, sync::SyncFromBrokerStage},
     state::{HasMetadata, StdState},
     Error,
+};
+use libafl_bolts::{
+    core_affinity::Cores,
+    current_nanos,
+    rands::StdRand,
+    shmem::{ShMemProvider, StdShMemProvider},
+    tuples::tuple_list,
 };
 use libafl_targets::{libfuzzer_initialize, libfuzzer_test_one_input, std_edges_map_observer};
 
@@ -103,7 +102,7 @@ struct Opt {
 pub extern "C" fn libafl_main() {
     // Registry the metadata types used in this fuzzer
     // Needed only on no_std
-    //RegistryBuilder::register::<Tokens>();
+    // unsafe { RegistryBuilder::register::<Tokens>(); }
     let opt = Opt::parse();
 
     let broker_port = opt.broker_port;

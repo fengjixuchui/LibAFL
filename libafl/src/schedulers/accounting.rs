@@ -4,10 +4,10 @@ use alloc::vec::Vec;
 use core::fmt::Debug;
 
 use hashbrown::HashMap;
+use libafl_bolts::{rands::Rand, AsMutSlice, AsSlice, HasLen, HasRefCnt};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    bolts::{rands::Rand, AsMutSlice, AsSlice, HasLen, HasRefCnt},
     corpus::{Corpus, CorpusId},
     feedbacks::MapIndexesMetadata,
     inputs::UsesInput,
@@ -22,6 +22,10 @@ use crate::{
 
 /// A testcase metadata holding a list of indexes of a map
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(
+    any(not(feature = "serdeany_autoreg"), miri),
+    allow(clippy::unsafe_derive_deserialize)
+)] // for SerdeAny
 pub struct AccountingIndexesMetadata {
     /// The list of indexes.
     pub list: Vec<usize>,
@@ -29,7 +33,7 @@ pub struct AccountingIndexesMetadata {
     pub tcref: isize,
 }
 
-crate::impl_serdeany!(AccountingIndexesMetadata);
+libafl_bolts::impl_serdeany!(AccountingIndexesMetadata);
 
 impl AsSlice for AccountingIndexesMetadata {
     type Entry = usize;
@@ -73,6 +77,10 @@ impl AccountingIndexesMetadata {
 
 /// A state metadata holding a map of favoreds testcases for each map entry
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(
+    any(not(feature = "serdeany_autoreg"), miri),
+    allow(clippy::unsafe_derive_deserialize)
+)] // for SerdeAny
 pub struct TopAccountingMetadata {
     /// map index -> corpus index
     pub map: HashMap<usize, CorpusId>,
@@ -82,7 +90,7 @@ pub struct TopAccountingMetadata {
     pub max_accounting: Vec<u32>,
 }
 
-crate::impl_serdeany!(TopAccountingMetadata);
+libafl_bolts::impl_serdeany!(TopAccountingMetadata);
 
 impl TopAccountingMetadata {
     /// Creates a new [`struct@TopAccountingMetadata`]
@@ -214,7 +222,7 @@ where
                             continue;
                         }
 
-                        if top_acc.max_accounting[idx] >= self.accounting_map[idx] {
+                        if top_acc.max_accounting[idx] == self.accounting_map[idx] {
                             equal_score = true;
                         }
 

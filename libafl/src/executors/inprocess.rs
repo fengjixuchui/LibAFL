@@ -25,6 +25,15 @@ use core::{
 #[cfg(all(feature = "std", unix))]
 use std::intrinsics::transmute;
 
+use libafl_bolts::current_time;
+#[cfg(all(unix, not(miri)))]
+use libafl_bolts::os::unix_signals::setup_signal_handler;
+#[cfg(all(feature = "std", unix))]
+use libafl_bolts::os::unix_signals::{ucontext_t, Handler, Signal};
+#[cfg(all(windows, feature = "std"))]
+use libafl_bolts::os::windows_exceptions::setup_exception_handler;
+#[cfg(all(feature = "std", unix))]
+use libafl_bolts::shmem::ShMemProvider;
 #[cfg(all(feature = "std", unix))]
 use libc::siginfo_t;
 #[cfg(all(feature = "std", unix))]
@@ -34,17 +43,10 @@ use nix::{
 };
 #[cfg(windows)]
 use windows::Win32::System::Threading::SetThreadStackGuarantee;
-
-#[cfg(all(unix, not(miri)))]
-use crate::bolts::os::unix_signals::setup_signal_handler;
-#[cfg(all(feature = "std", unix))]
-use crate::bolts::os::unix_signals::{ucontext_t, Handler, Signal};
 #[cfg(all(windows, feature = "std"))]
-use crate::bolts::os::windows_exceptions::setup_exception_handler;
-#[cfg(all(feature = "std", unix))]
-use crate::bolts::shmem::ShMemProvider;
+use windows::Win32::System::Threading::PTP_TIMER;
+
 use crate::{
-    bolts::current_time,
     events::{EventFirer, EventRestarter},
     executors::{Executor, ExitKind, HasObservers},
     feedbacks::Feedback,
@@ -208,7 +210,7 @@ where
                 This number 0x20000 could vary depending on the compilers optimization for future compression library changes.
             */
             let mut stack_reserved = 0x20000;
-            SetThreadStackGuarantee(&mut stack_reserved);
+            SetThreadStackGuarantee(&mut stack_reserved)?;
         }
         Ok(Self {
             harness_fn,
@@ -443,7 +445,7 @@ pub(crate) struct InProcessExecutorHandlerData {
     timeout_handler: *const c_void,
 
     #[cfg(all(windows, feature = "std"))]
-    pub(crate) tp_timer: *mut c_void,
+    pub(crate) ptp_timer: Option<PTP_TIMER>,
     #[cfg(all(windows, feature = "std"))]
     pub(crate) in_target: u64,
     #[cfg(all(windows, feature = "std"))]
@@ -530,7 +532,7 @@ pub(crate) static mut GLOBAL_STATE: InProcessExecutorHandlerData = InProcessExec
     #[cfg(any(unix, feature = "std"))]
     timeout_handler: ptr::null(),
     #[cfg(all(windows, feature = "std"))]
-    tp_timer: null_mut(),
+    ptp_timer: None,
     #[cfg(all(windows, feature = "std"))]
     in_target: 0,
     #[cfg(all(windows, feature = "std"))]
@@ -675,11 +677,9 @@ pub fn run_observers_and_save_state<CF, E, EM, OF, Z>(
             .expect("Could not save state in run_observers_and_save_state");
     }
 
-    // We will start mutators from scratch after restart.
+    // Serialize the state and wait safely for the broker to read pending messages
     event_mgr.on_restart(state).unwrap();
 
-    log::info!("Waiting for broker...");
-    event_mgr.await_restart_safe();
     log::info!("Bye!");
 }
 
@@ -692,12 +692,12 @@ mod unix_signal_handler {
     #[cfg(feature = "std")]
     use std::{io::Write, panic};
 
+    use libafl_bolts::os::unix_signals::{ucontext_t, Handler, Signal};
     use libc::siginfo_t;
 
     #[cfg(feature = "std")]
     use crate::inputs::Input;
     use crate::{
-        bolts::os::unix_signals::{ucontext_t, Handler, Signal},
         events::{EventFirer, EventRestarter},
         executors::{
             inprocess::{run_observers_and_save_state, InProcessExecutorHandlerData, GLOBAL_STATE},
@@ -847,8 +847,6 @@ mod unix_signal_handler {
             ExitKind::Timeout,
         );
 
-        event_mgr.await_restart_safe();
-
         libc::_exit(55);
     }
 
@@ -893,7 +891,7 @@ mod unix_signal_handler {
                 {
                     let mut writer = std::io::BufWriter::new(&mut bsod);
                     writeln!(writer, "input: {:?}", input.generate_name(0)).unwrap();
-                    crate::bolts::minibsod::generate_minibsod(&mut writer, signal, _info, _context)
+                    libafl_bolts::minibsod::generate_minibsod(&mut writer, signal, _info, _context)
                         .unwrap();
                     writer.flush().unwrap();
                 }
@@ -925,7 +923,7 @@ mod unix_signal_handler {
                     let mut bsod = Vec::new();
                     {
                         let mut writer = std::io::BufWriter::new(&mut bsod);
-                        crate::bolts::minibsod::generate_minibsod(
+                        libafl_bolts::minibsod::generate_minibsod(
                             &mut writer,
                             signal,
                             _info,
@@ -958,13 +956,10 @@ mod unix_signal_handler {
 #[cfg(all(windows, feature = "std"))]
 pub mod windows_asan_handler {
     use alloc::string::String;
-    use core::{
-        ptr,
-        sync::atomic::{compiler_fence, Ordering},
-    };
+    use core::sync::atomic::{compiler_fence, Ordering};
 
     use windows::Win32::System::Threading::{
-        EnterCriticalSection, LeaveCriticalSection, RTL_CRITICAL_SECTION,
+        EnterCriticalSection, LeaveCriticalSection, CRITICAL_SECTION,
     };
 
     use crate::{
@@ -995,18 +990,18 @@ pub mod windows_asan_handler {
         let data = &mut GLOBAL_STATE;
         data.set_in_handler(true);
         // Have we set a timer_before?
-        if !(data.tp_timer as *mut windows::Win32::System::Threading::TP_TIMER).is_null() {
+        if data.ptp_timer.is_some() {
             /*
                 We want to prevent the timeout handler being run while the main thread is executing the crash handler
                 Timeout handler runs if it has access to the critical section or data.in_target == 0
                 Writing 0 to the data.in_target makes the timeout handler makes the timeout handler invalid.
             */
             compiler_fence(Ordering::SeqCst);
-            EnterCriticalSection(data.critical as *mut RTL_CRITICAL_SECTION);
+            EnterCriticalSection(data.critical as *mut CRITICAL_SECTION);
             compiler_fence(Ordering::SeqCst);
             data.in_target = 0;
             compiler_fence(Ordering::SeqCst);
-            LeaveCriticalSection(data.critical as *mut RTL_CRITICAL_SECTION);
+            LeaveCriticalSection(data.critical as *mut CRITICAL_SECTION);
             compiler_fence(Ordering::SeqCst);
         }
 
@@ -1031,9 +1026,9 @@ pub mod windows_asan_handler {
         } else {
             let executor = data.executor_mut::<E>();
             // reset timer
-            if !data.tp_timer.is_null() {
+            if data.ptp_timer.is_some() {
                 executor.post_run_reset();
-                data.tp_timer = ptr::null_mut();
+                data.ptp_timer = None;
             }
 
             let state = data.state_mut::<E::State>();
@@ -1073,14 +1068,14 @@ mod windows_exception_handler {
     #[cfg(feature = "std")]
     use std::panic;
 
+    use libafl_bolts::os::windows_exceptions::{
+        ExceptionCode, Handler, CRASH_EXCEPTIONS, EXCEPTION_HANDLERS_SIZE, EXCEPTION_POINTERS,
+    };
     use windows::Win32::System::Threading::{
-        EnterCriticalSection, ExitProcess, LeaveCriticalSection, RTL_CRITICAL_SECTION,
+        EnterCriticalSection, ExitProcess, LeaveCriticalSection, CRITICAL_SECTION,
     };
 
     use crate::{
-        bolts::os::windows_exceptions::{
-            ExceptionCode, Handler, CRASH_EXCEPTIONS, EXCEPTION_HANDLERS_SIZE, EXCEPTION_POINTERS,
-        },
         events::{EventFirer, EventRestarter},
         executors::{
             inprocess::{
@@ -1145,18 +1140,18 @@ mod windows_exception_handler {
             let in_handler = data.set_in_handler(true);
             // Have we set a timer_before?
             unsafe {
-                if !(data.tp_timer as *mut windows::Win32::System::Threading::TP_TIMER).is_null() {
+                if data.ptp_timer.is_some() {
                     /*
                         We want to prevent the timeout handler being run while the main thread is executing the crash handler
                         Timeout handler runs if it has access to the critical section or data.in_target == 0
                         Writing 0 to the data.in_target makes the timeout handler makes the timeout handler invalid.
                     */
                     compiler_fence(Ordering::SeqCst);
-                    EnterCriticalSection(data.critical as *mut RTL_CRITICAL_SECTION);
+                    EnterCriticalSection(data.critical as *mut CRITICAL_SECTION);
                     compiler_fence(Ordering::SeqCst);
                     data.in_target = 0;
                     compiler_fence(Ordering::SeqCst);
-                    LeaveCriticalSection(data.critical as *mut RTL_CRITICAL_SECTION);
+                    LeaveCriticalSection(data.critical as *mut CRITICAL_SECTION);
                     compiler_fence(Ordering::SeqCst);
                 }
             }
@@ -1206,22 +1201,14 @@ mod windows_exception_handler {
         let data: &mut InProcessExecutorHandlerData =
             &mut *(global_state as *mut InProcessExecutorHandlerData);
         compiler_fence(Ordering::SeqCst);
-        EnterCriticalSection(
-            (data.critical as *mut RTL_CRITICAL_SECTION)
-                .as_mut()
-                .unwrap(),
-        );
+        EnterCriticalSection((data.critical as *mut CRITICAL_SECTION).as_mut().unwrap());
         compiler_fence(Ordering::SeqCst);
 
         if !data.timeout_executor_ptr.is_null()
             && data.timeout_executor_mut::<E>().handle_timeout(data)
         {
             compiler_fence(Ordering::SeqCst);
-            LeaveCriticalSection(
-                (data.critical as *mut RTL_CRITICAL_SECTION)
-                    .as_mut()
-                    .unwrap(),
-            );
+            LeaveCriticalSection((data.critical as *mut CRITICAL_SECTION).as_mut().unwrap());
             compiler_fence(Ordering::SeqCst);
 
             return;
@@ -1258,11 +1245,7 @@ mod windows_exception_handler {
             }
         }
         compiler_fence(Ordering::SeqCst);
-        LeaveCriticalSection(
-            (data.critical as *mut RTL_CRITICAL_SECTION)
-                .as_mut()
-                .unwrap(),
-        );
+        LeaveCriticalSection((data.critical as *mut CRITICAL_SECTION).as_mut().unwrap());
         compiler_fence(Ordering::SeqCst);
         // log::info!("TIMER INVOKED!");
     }
@@ -1282,18 +1265,18 @@ mod windows_exception_handler {
             + HasScheduler,
     {
         // Have we set a timer_before?
-        if !(data.tp_timer as *mut windows::Win32::System::Threading::TP_TIMER).is_null() {
+        if data.ptp_timer.is_some() {
             /*
                 We want to prevent the timeout handler being run while the main thread is executing the crash handler
                 Timeout handler runs if it has access to the critical section or data.in_target == 0
                 Writing 0 to the data.in_target makes the timeout handler makes the timeout handler invalid.
             */
             compiler_fence(Ordering::SeqCst);
-            EnterCriticalSection(data.critical as *mut RTL_CRITICAL_SECTION);
+            EnterCriticalSection(data.critical as *mut CRITICAL_SECTION);
             compiler_fence(Ordering::SeqCst);
             data.in_target = 0;
             compiler_fence(Ordering::SeqCst);
-            LeaveCriticalSection(data.critical as *mut RTL_CRITICAL_SECTION);
+            LeaveCriticalSection(data.critical as *mut CRITICAL_SECTION);
             compiler_fence(Ordering::SeqCst);
         }
 
@@ -1350,9 +1333,9 @@ mod windows_exception_handler {
         } else {
             let executor = data.executor_mut::<E>();
             // reset timer
-            if !data.tp_timer.is_null() {
+            if data.ptp_timer.is_some() {
                 executor.post_run_reset();
-                data.tp_timer = ptr::null_mut();
+                data.ptp_timer = None;
             }
 
             let state = data.state_mut::<E::State>();
@@ -2108,11 +2091,11 @@ pub mod child_signal_handlers {
     use alloc::boxed::Box;
     use std::panic;
 
+    use libafl_bolts::os::unix_signals::{ucontext_t, Signal};
     use libc::siginfo_t;
 
     use super::{InProcessForkExecutorGlobalData, FORK_EXECUTOR_GLOBAL_DATA};
     use crate::{
-        bolts::os::unix_signals::{ucontext_t, Signal},
         executors::{ExitKind, HasObservers},
         inputs::UsesInput,
         observers::ObserversTuple,
@@ -2196,11 +2179,11 @@ pub mod child_signal_handlers {
 mod tests {
     use core::marker::PhantomData;
 
+    use libafl_bolts::tuples::tuple_list;
     #[cfg(all(feature = "std", feature = "fork", unix))]
     use serial_test::serial;
 
     use crate::{
-        bolts::tuples::tuple_list,
         events::NopEventManager,
         executors::{inprocess::InProcessHandlers, Executor, ExitKind, InProcessExecutor},
         inputs::{NopInput, UsesInput},
@@ -2238,8 +2221,9 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     #[cfg(all(feature = "std", feature = "fork", unix))]
     fn test_inprocessfork_exec() {
+        use libafl_bolts::shmem::{ShMemProvider, StdShMemProvider};
+
         use crate::{
-            bolts::shmem::{ShMemProvider, StdShMemProvider},
             events::SimpleEventManager,
             executors::{inprocess::InChildProcessHandlers, InProcessForkExecutor},
             state::NopState,

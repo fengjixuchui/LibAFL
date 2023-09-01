@@ -15,10 +15,10 @@ use frida_gum::instruction_writer::InstructionWriter;
 use frida_gum::CpuContext;
 use frida_gum::{stalker::Transformer, Gum, Module, ModuleDetails, ModuleMap, PageProtection};
 use libafl::{
-    bolts::{cli::FuzzerOptions, tuples::MatchFirstType},
     inputs::{HasTargetBytes, Input},
     Error,
 };
+use libafl_bolts::{cli::FuzzerOptions, tuples::MatchFirstType};
 #[cfg(unix)]
 use libafl_targets::drcov::DrCovBasicBlock;
 #[cfg(unix)]
@@ -298,8 +298,14 @@ where
                         if let Some((segment, width, basereg, indexreg, scale, disp)) = res {
                             if let Some(rt) = runtimes.match_first_type_mut::<AsanRuntime>() {
                                 rt.emit_shadow_check(
-                                    address, &output, segment, width, basereg, indexreg, scale,
-                                    disp,
+                                    address,
+                                    &output,
+                                    segment,
+                                    width,
+                                    basereg,
+                                    indexreg,
+                                    scale,
+                                    disp.try_into().unwrap(),
                                 );
                             }
                         }
@@ -325,9 +331,7 @@ where
                         if let Some(rt) = runtimes.match_first_type_mut::<CmpLogRuntime>() {
                             if let Some((op1, op2, special_case)) =
                                 CmpLogRuntime::cmplog_is_interesting_instruction(
-                                    &helper.capstone,
-                                    address,
-                                    instr,
+                                    &capstone, address, instr,
                                 )
                             {
                                 //emit code that saves the relevant data in runtime(passes it to x0, x1)

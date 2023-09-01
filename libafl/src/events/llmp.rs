@@ -12,37 +12,37 @@ use core::{marker::PhantomData, num::NonZeroUsize, time::Duration};
 use std::net::{SocketAddr, ToSocketAddrs};
 
 #[cfg(feature = "std")]
+use libafl_bolts::core_affinity::CoreId;
+#[cfg(feature = "adaptive_serialization")]
+use libafl_bolts::current_time;
+#[cfg(all(feature = "std", any(windows, not(feature = "fork"))))]
+use libafl_bolts::os::startable_self;
+#[cfg(all(unix, feature = "std", not(miri)))]
+use libafl_bolts::os::unix_signals::setup_signal_handler;
+#[cfg(all(feature = "std", feature = "fork", unix))]
+use libafl_bolts::os::{fork, ForkResult};
+#[cfg(feature = "llmp_compression")]
+use libafl_bolts::{
+    compress::GzipCompressor,
+    llmp::{LLMP_FLAG_COMPRESSED, LLMP_FLAG_INITIALIZED},
+};
+#[cfg(feature = "std")]
+use libafl_bolts::{llmp::LlmpConnection, shmem::StdShMemProvider, staterestore::StateRestorer};
+use libafl_bolts::{
+    llmp::{self, LlmpClient, LlmpClientDescription, Tag},
+    shmem::ShMemProvider,
+    ClientId,
+};
+#[cfg(feature = "std")]
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "std")]
 use typed_builder::TypedBuilder;
 
 use super::{CustomBufEventResult, CustomBufHandlerFn};
-#[cfg(feature = "std")]
-use crate::bolts::core_affinity::CoreId;
-#[cfg(feature = "adaptive_serialization")]
-use crate::bolts::current_time;
-#[cfg(all(feature = "std", any(windows, not(feature = "fork"))))]
-use crate::bolts::os::startable_self;
-#[cfg(all(unix, feature = "std", not(miri)))]
-use crate::bolts::os::unix_signals::setup_signal_handler;
-#[cfg(all(feature = "std", feature = "fork", unix))]
-use crate::bolts::os::{fork, ForkResult};
-#[cfg(feature = "llmp_compression")]
-use crate::bolts::{
-    compress::GzipCompressor,
-    llmp::{LLMP_FLAG_COMPRESSED, LLMP_FLAG_INITIALIZED},
-};
-#[cfg(feature = "std")]
-use crate::bolts::{llmp::LlmpConnection, shmem::StdShMemProvider, staterestore::StateRestorer};
 #[cfg(all(unix, feature = "std"))]
 use crate::events::{shutdown_handler, SHUTDOWN_SIGHANDLER_DATA};
 use crate::{
-    bolts::{
-        llmp::{self, LlmpClient, LlmpClientDescription, Tag},
-        shmem::ShMemProvider,
-        ClientId,
-    },
     events::{
         BrokerEventResult, Event, EventConfig, EventFirer, EventManager, EventManagerId,
         EventProcessor, EventRestarter, HasCustomBufHandlers, HasEventManagerId, ProgressReporter,
@@ -68,7 +68,7 @@ const _LLMP_TAG_NO_RESTART: Tag = Tag(0x57A7EE71);
 
 /// The minimum buffer size at which to compress LLMP IPC messages.
 #[cfg(feature = "llmp_compression")]
-const COMPRESS_THRESHOLD: usize = 1024;
+pub const COMPRESS_THRESHOLD: usize = 1024;
 
 /// An LLMP-backed event manager for scalable multi-processed fuzzing
 #[derive(Debug)]
@@ -240,7 +240,11 @@ where
                 };
                 let client = monitor.client_stats_mut_for(id);
                 client.update_corpus_size(*corpus_size as u64);
-                client.update_executions(*executions as u64, *time);
+                if id == client_id {
+                    // do not update executions for forwarded messages, otherwise we loose the total order
+                    // as a forwarded msg with a lower executions may arrive after a stats msg with an higher executions
+                    client.update_executions(*executions as u64, *time);
+                }
                 monitor.display(event.name().to_string(), id);
                 Ok(BrokerEventResult::Forward)
             }
@@ -338,7 +342,7 @@ pub trait EventStatsCollector {
 pub trait EventStatsCollector {}
 
 /// An [`EventManager`] that forwards all events to other attached fuzzers on shared maps or via tcp,
-/// using low-level message passing, [`crate::bolts::llmp`].
+/// using low-level message passing, [`libafl_bolts::llmp`].
 pub struct LlmpEventManager<S, SP>
 where
     S: UsesInput,
@@ -620,7 +624,7 @@ impl<S: UsesInput, SP: ShMemProvider> LlmpEventManager<S, SP> {
     /// The other side may free up all allocated memory.
     /// We are no longer allowed to send anything afterwards.
     pub fn send_exiting(&mut self) -> Result<(), Error> {
-        self.llmp.sender.send_exiting()
+        self.llmp.sender_mut().send_exiting()
     }
 }
 
@@ -754,7 +758,7 @@ where
         executor: &mut E,
     ) -> Result<usize, Error> {
         // TODO: Get around local event copy by moving handle_in_client
-        let self_id = self.llmp.sender.id;
+        let self_id = self.llmp.sender().id();
         let mut count = 0;
         while let Some((client_id, tag, _flags, msg)) = self.llmp.recv_buf_with_flags()? {
             assert!(
@@ -821,7 +825,7 @@ where
 {
     /// Gets the id assigned to this staterestorer.
     fn mgr_id(&self) -> EventManagerId {
-        EventManagerId(self.llmp.sender.id.0 as usize)
+        EventManagerId(self.llmp.sender().id().0 as usize)
     }
 }
 
@@ -954,7 +958,11 @@ where
         self.staterestorer.save(&(
             if self.save_state { Some(state) } else { None },
             &self.llmp_mgr.describe()?,
-        ))
+        ))?;
+
+        log::info!("Waiting for broker...");
+        self.await_restart_safe();
+        Ok(())
     }
 
     fn send_exiting(&mut self) -> Result<(), Error> {
@@ -1094,7 +1102,7 @@ where
 /// `restarter` and `runner`, that can be used on systems both with and without `fork` support. The
 /// `restarter` will start a new process each time the child crashes or times out.
 #[cfg(feature = "std")]
-#[allow(clippy::default_trait_access)]
+#[allow(clippy::default_trait_access, clippy::ignored_unit_patterns)]
 #[derive(TypedBuilder, Debug)]
 pub struct RestartingMgr<MT, S, SP>
 where
@@ -1564,7 +1572,7 @@ where
         Z: ExecutionProcessor<E::Observers, State = S> + EvaluatorObservers<E::Observers>,
     {
         // TODO: Get around local event copy by moving handle_in_client
-        let self_id = self.llmp.sender.id;
+        let self_id = self.llmp.sender().id();
         let mut count = 0;
         while let Some((client_id, tag, _flags, msg)) = self.llmp.recv_buf_with_flags()? {
             assert!(
@@ -1715,17 +1723,17 @@ where
 mod tests {
     use core::sync::atomic::{compiler_fence, Ordering};
 
+    use libafl_bolts::{
+        llmp::{LlmpClient, LlmpSharedMap},
+        rands::StdRand,
+        shmem::{ShMemProvider, StdShMemProvider},
+        staterestore::StateRestorer,
+        tuples::tuple_list,
+        ClientId,
+    };
     use serial_test::serial;
 
     use crate::{
-        bolts::{
-            llmp::{LlmpClient, LlmpSharedMap},
-            rands::StdRand,
-            shmem::{ShMemProvider, StdShMemProvider},
-            staterestore::StateRestorer,
-            tuples::tuple_list,
-            ClientId,
-        },
         corpus::{Corpus, InMemoryCorpus, Testcase},
         events::{llmp::_ENV_FUZZER_SENDER, LlmpEventManager},
         executors::{ExitKind, InProcessExecutor},
