@@ -28,7 +28,8 @@
     clippy::missing_panics_doc,
     clippy::missing_docs_in_private_items,
     clippy::module_name_repetitions,
-    clippy::ptr_cast_constness
+    clippy::ptr_cast_constness,
+    clippy::negative_feature_names
 )]
 #![cfg_attr(not(test), warn(
     missing_debug_implementations,
@@ -62,7 +63,6 @@
         overflowing_literals,
         path_statements,
         patterns_in_fns_without_body,
-        private_in_public,
         unconditional_recursion,
         unused,
         unused_allocation,
@@ -556,6 +556,17 @@ pub unsafe extern "C" fn external_current_millis() -> u64 {
     1000
 }
 
+/// Trait to convert into an Owned type
+pub trait IntoOwned {
+    /// Returns if the current type is an owned type.
+    #[must_use]
+    fn is_owned(&self) -> bool;
+
+    /// Transfer the current type into an owned type.
+    #[must_use]
+    fn into_owned(self) -> Self;
+}
+
 /// Can be converted to a slice
 pub trait AsSlice {
     /// Type of the entries in this slice
@@ -726,7 +737,7 @@ pub static LIBAFL_STDERR_LOGGER: SimpleStderrLogger = SimpleStderrLogger::new();
 #[cfg(feature = "std")]
 pub static LIBAFL_STDOUT_LOGGER: SimpleStdoutLogger = SimpleStdoutLogger::new();
 
-/// A simple logger struct that logs to stderr when used with [`log::set_logger`].
+/// A simple logger struct that logs to stdout when used with [`log::set_logger`].
 #[derive(Debug)]
 #[cfg(feature = "std")]
 pub struct SimpleStdoutLogger {}

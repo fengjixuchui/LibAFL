@@ -7,12 +7,14 @@ use core::{
     mem::MaybeUninit,
     ptr::{addr_of, copy_nonoverlapping, null},
 };
-use std::{cell::OnceCell, slice::from_raw_parts, str::from_utf8_unchecked};
+#[cfg(emulation_mode = "usermode")]
+use std::cell::OnceCell;
 #[cfg(emulation_mode = "systemmode")]
 use std::{
     ffi::{CStr, CString},
     ptr::null_mut,
 };
+use std::{slice::from_raw_parts, str::from_utf8_unchecked};
 
 #[cfg(emulation_mode = "usermode")]
 use libc::c_int;
@@ -981,6 +983,14 @@ impl Emulator {
         }
     }
 
+    pub fn entry_break(&self, addr: GuestAddr) {
+        self.set_breakpoint(addr);
+        unsafe {
+            self.run();
+        }
+        self.remove_breakpoint(addr);
+    }
+
     pub fn set_hook(
         &self,
         addr: GuestAddr,
@@ -1425,6 +1435,10 @@ pub mod pybind {
 
         fn set_breakpoint(&self, addr: GuestAddr) {
             self.emu.set_breakpoint(addr);
+        }
+
+        fn entry_break(&self, addr: GuestAddr) {
+            self.emu.entry_break(addr);
         }
 
         fn remove_breakpoint(&self, addr: GuestAddr) {
